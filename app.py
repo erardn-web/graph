@@ -6,48 +6,53 @@ st.set_page_config(page_title="Analyse Prestations Santé", layout="wide")
 
 st.title("📊 Analyse des revenus mensuels")
 
-# 1. Chargement du fichier
 uploaded_file = st.file_uploader("Charger l'export Excel (onglet 'Prestation')", type="xlsx")
 
 if uploaded_file:
-    # Lecture de l'onglet spécifique
+    # 1. Lecture de l'onglet 'Prestation'
     df = pd.read_excel(uploaded_file, sheet_name='Prestation')
 
-    # --- Configuration et Nettoyage ---
-    col_code = "Code tarifaire"
-    col_somme = "Somme" 
-    col_date = "Date"
+    # --- Identification dynamique des colonnes par position ---
+    # Colonne C (index 2) = Code tarifaire
+    # Colonne L (index 11) = Somme
+    # On cherche la colonne Date par son nom car sa position peut varier
     
-    # Conversion en date
-    df[col_date] = pd.to_datetime(df[col_date])
+    col_code = df.columns[2]   # Récupère le nom de la 3ème colonne
+    col_somme = df.columns[11] # Récupère le nom de la 12ème colonne (L)
+    
+    # Sécurité pour la date (on cherche une colonne qui contient 'Date')
+    date_cols = [c for c in df.columns if 'Date' in c]
+    col_date = date_cols[0] if date_cols else df.columns[0]
 
-    # FILTRE : Suppression des valeurs négatives ou nulles
+    # --- Nettoyage ---
+    # Conversion en date
+    df[col_date] = pd.to_datetime(df[col_date], errors='coerce')
+    df = df.dropna(subset=[col_date]) # Supprime les lignes sans date
+
+    # FILTRE : Uniquement les valeurs strictement positives
+    # On s'assure que la colonne est bien numérique
+    df[col_somme] = pd.to_numeric(df[col_somme], errors='coerce')
     df = df[df[col_somme] > 0]
 
-    # --- Logique de regroupement par profession ---
-    # Ici, tu peux adapter les codes selon ta nomenclature réelle
+    # --- Regroupement par profession ---
     def assigner_profession(code):
-        code_str = str(code)
-        if code_str.startswith('73'): return 'Physio'
-        if code_str.startswith('74'): return 'Ergo'
-        if 'massage' in code_str.lower(): return 'Massage'
+        c = str(code)
+        if c.startswith('73'): return 'Physio'
+        if c.startswith('74'): return 'Ergo'
+        if 'massage' in c.lower(): return 'Massage'
         return 'Autre'
 
     df['Profession'] = df[col_code].apply(assigner_profession)
 
-    # 2. Barre latérale : Filtres et Options
-    st.sidebar.header("Paramètres d'affichage")
-    
+    # 2. Barre latérale
+    st.sidebar.header("Paramètres")
     chart_type = st.sidebar.radio("Type de graphique :", ("Barres", "Courbes"))
+    view_mode = st.sidebar.selectbox("Regrouper par :", ("Profession", col_code))
     
-    # Choix de la vue : par Code ou par Profession
-    view_mode = st.sidebar.selectbox("Regrouper par :", ("Code tarifaire", "Profession"))
-    
-    # Filtres dynamiques selon le mode choisi
-    options_disponibles = sorted(df[view_mode].unique().tolist())
-    selection = st.sidebar.multiselect(f"Sélectionner les {view_mode}s :", options_disponibles, default=options_disponibles)
+    options = sorted(df[view_mode].unique().tolist())
+    selection = st.sidebar.multiselect(f"Sélectionner {view_mode} :", options, default=options)
 
-    # Filtrage final
+    # Filtrage
     df_filtered = df[df[view_mode].isin(selection)].copy()
 
     if not df_filtered.empty:
@@ -55,23 +60,16 @@ if uploaded_file:
         df_filtered['Mois'] = df_filtered[col_date].dt.to_period('M').dt.to_timestamp()
         df_monthly = df_filtered.groupby(['Mois', view_mode])[col_somme].sum().reset_index()
 
-        # 4. Construction du graphique
-        title_graph = f"Somme mensuelle par {view_mode} (Valeurs positives uniquement)"
-        
+        # 4. Graphique
         if chart_type == "Barres":
-            fig = px.bar(df_monthly, x='Mois', y=col_somme, color=view_mode, barmode='group',
-                         title=title_graph, labels={col_somme: 'Total (CHF)'})
+            fig = px.bar(df_monthly, x='Mois', y=col_somme, color=view_mode, barmode='group')
         else:
-            fig = px.line(df_monthly, x='Mois', y=col_somme, color=view_mode, markers=True,
-                          title=title_graph, labels={col_somme: 'Total (CHF)'})
+            fig = px.line(df_monthly, x='Mois', y=col_somme, color=view_mode, markers=True)
 
         fig.update_xaxes(dtick="M1", tickformat="%b %Y")
         st.plotly_chart(fig, use_container_width=True)
 
-        # 5. Tableau récapitulatif
-        with st.expander("Consulter le tableau des données"):
+        with st.expander("Données détaillées"):
             st.dataframe(df_monthly)
     else:
-        st.warning("Aucune donnée à afficher avec les filtres actuels.")
-else:
-    st.info("👋 Veuillez charger votre fichier Excel pour commencer.")
+        st.warning("Aucune donnée à afficher.")
