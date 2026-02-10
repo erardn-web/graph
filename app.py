@@ -2,87 +2,99 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-st.set_page_config(page_title="Analyse Prestations", layout="wide")
+# Configuration de l'interface
+st.set_page_config(page_title="Analyse Prestations Santé", layout="wide")
 
-st.title("📊 Dashboard des Prestations Santé")
+# --- LOGIQUE MÉTIER DES PROFESSIONS ---
+def assigner_profession(code):
+    c = str(code).strip().lower()
+    
+    # Priorité REM -> Autre
+    if 'rem' in c:
+        return "Autre"
+    
+    # Physiothérapie : 73xx, 25xx, 15.30xx / contient "privé", "abo" ou "thais"
+    if any(x in c for x in ['privé', 'abo', 'thais']) or c.startswith(('73', '25', '15.30')): 
+        return "Physiothérapie"
+    
+    # Ergothérapie : 76xx, 31xx, 32xx / contient "foyer"
+    if any(x in c for x in ['foyer']) or c.startswith(('76', '31', '32')): 
+        return "Ergothérapie"
+    
+    # Massage : 1062xx
+    if c.startswith('1062'): 
+        return "Massage"
+        
+    return "Autre"
 
-uploaded_file = st.file_uploader("Charger l'export Excel", type="xlsx")
+# Définition des couleurs fixes
+COULEURS_PROF = {
+    "Physiothérapie": "#00CCFF",
+    "Ergothérapie": "#FF9900",
+    "Massage": "#00CC96",
+    "Autre": "#AB63FA"
+}
+
+st.title("📊 Analyse des revenus mensuels")
+
+uploaded_file = st.file_uploader("📂 Déposer l'export Excel (onglet 'Prestation')", type="xlsx")
 
 if uploaded_file:
-    # 1. Lecture de l'onglet 'Prestation'
-    df = pd.read_excel(uploaded_file, sheet_name='Prestation')
-    
-    # --- Identification STRICTE par position ---
-    # Colonne C (index 2) : Code
-    # Colonne D (index 3) : Nom Prestation
-    # Colonne L (index 11) : Somme CHF
-    # On cherche la colonne Date par son nom car sa position varie souvent
-    
-    nom_col_code = df.columns[2]
-    nom_col_nom = df.columns[3]
-    nom_col_somme = df.columns[11]
-    
-    date_cols = [c for c in df.columns if 'Date' in str(c)]
-    nom_col_date = date_cols[0] if date_cols else df.columns[0]
+    try:
+        # Lecture de l'onglet spécifique
+        df = pd.read_excel(uploaded_file, sheet_name='Prestation')
+        
+        # Identification des colonnes par index
+        col_code = df.columns
+        col_somme = df.columns
+        
+        # Détection de la colonne date
+        date_cols = [c for c in df.columns if 'Date' in str(c)]
+        col_date = date_cols if date_cols else df.columns
 
-    # --- Nettoyage des données ---
-    # On force la colonne Somme en numérique
-    df[nom_col_somme] = pd.to_numeric(df[nom_col_somme], errors='coerce')
-    
-    # On force la date
-    df[nom_col_date] = pd.to_datetime(df[nom_col_date], errors='coerce')
-    
-    # Filtre : Valeurs > 0 et on vire les lignes vides (NaN)
-    df = df[df[nom_col_somme] > 0].dropna(subset=[nom_col_date, nom_col_somme])
+        # --- Nettoyage ---
+        df[col_somme] = pd.to_numeric(df[col_somme], errors='coerce')
+        df[col_date] = pd.to_datetime(df[col_date], errors='coerce')
+        df = df[df[col_somme] > 0].dropna(subset=[col_date, col_somme])
 
-    # --- 2. Classification des Professions (Sidebar) ---
-    st.sidebar.header("📁 Configuration")
-    
-    # Création du dictionnaire Code -> Nom pour l'affichage
-    df_codes = df[[nom_col_code, nom_col_nom]].drop_duplicates(subset=[nom_col_code])
-    mapping_professions = {}
-    
-    with st.sidebar.expander("Assigner les professions", expanded=True):
-        for _, row in df_codes.iterrows():
-            c_code = str(row[nom_col_code])
-            c_nom = str(row[nom_col_nom])
+        # Application des règles
+        df['Profession'] = df[col_code].apply(assigner_profession)
+
+        # --- Menu Latéral ---
+        st.sidebar.header("Options d'affichage")
+        chart_type = st.sidebar.radio("Style de graphique :", ["Barres", "Courbes"])
+        view_mode = st.radio("Grouper par :", ["Profession", "Code tarifaire"], horizontal=True)
+        
+        target_col = "Profession" if view_mode == "Profession" else col_code
+        
+        options = sorted(df[target_col].unique().astype(str))
+        selection = st.sidebar.multiselect(f"Sélectionner {view_mode}(s) :", options, default=options)
+
+        df_filtered = df[df[target_col].astype(str).isin(selection)].copy()
+
+        if not df_filtered.empty:
+            df_filtered['Mois'] = df_filtered[col_date].dt.to_period('M').dt.to_timestamp()
+            df_plot = df_filtered.groupby(['Mois', target_col])[col_somme].sum().reset_index()
+
+            color_map = COULEURS_PROF if view_mode == "Profession" else None
             
-            # Pré-sélection automatique
-            default_p = "Autre"
-            if c_code.startswith('73'): default_p = "Physiothérapie"
-            elif c_code.startswith('76'): default_p = "Ergothérapie"
-            elif '1062' in c_code: default_p = "Massage"
+            if chart_type == "Barres":
+                fig = px.bar(df_plot, x='Mois', y=col_somme, color=target_col, barmode='group', 
+                             color_discrete_map=color_map, text_auto='.2f', 
+                             title=f"Revenus mensuels par {view_mode}")
+            else:
+                fig = px.line(df_plot, x='Mois', y=col_somme, color=target_col, markers=True,
+                              color_discrete_map=color_map, title=f"Évolution mensuelle par {view_mode}")
+
+            fig.update_xaxes(dtick="M1", tickformat="%b %Y")
+            st.plotly_chart(fig, use_container_width=True)
             
-            prof = st.selectbox(
-                f"{c_code} - {c_nom[:30]}...", 
-                ["Physiothérapie", "Ergothérapie", "Massage", "Autre"],
-                index=["Physiothérapie", "Ergothérapie", "Massage", "Autre"].index(default_p),
-                key=f"p_{c_code}"
-            )
-            mapping_professions[c_code] = prof
-
-    # Appliquer la profession au tableau
-    df['Profession'] = df[nom_col_code].astype(str).map(mapping_professions)
-
-    # --- 3. Graphiques ---
-    chart_choice = st.sidebar.radio("Type de graphique", ["Barres", "Courbes"])
-    view_choice = st.radio("Grouper par :", ["Profession", nom_col_code], horizontal=True)
-
-    # Préparation données mensuelles
-    df['Mois'] = df[nom_col_date].dt.to_period('M').dt.to_timestamp()
-    df_plot = df.groupby(['Mois', view_choice])[nom_col_somme].sum().reset_index()
-
-    if chart_choice == "Barres":
-        fig = px.bar(df_plot, x='Mois', y=nom_col_somme, color=view_choice, barmode='group', text_auto='.2f')
-    else:
-        fig = px.line(df_plot, x='Mois', y=nom_col_somme, color=view_choice, markers=True)
-
-    fig.update_xaxes(dtick="M1", tickformat="%b %Y")
-    st.plotly_chart(fig, use_container_width=True)
-
-    # 4. Tableau de données
-    with st.expander("Voir le tableau des résultats"):
-        st.dataframe(df_plot)
-
+            with st.expander("📄 Voir le détail des montants par mois"):
+                st.dataframe(df_plot.sort_values(['Mois', col_somme], ascending=[False, False]))
+        else:
+            st.warning("Aucune donnée sélectionnée.")
+            
+    except Exception as e:
+        st.error(f"Erreur d'analyse : {e}")
 else:
-    st.info("Prêt à analyser ! Glissez votre fichier Excel ici.")
+    st.info("👋 Bonjour ! Glissez votre export Excel pour générer les graphiques.")
