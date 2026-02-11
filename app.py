@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+from datetime import datetime
 
 st.set_page_config(page_title="Analyse Prestations Santé", layout="wide")
 
@@ -35,32 +36,29 @@ if uploaded_file:
         df = df[df[nom_col_somme] > 0].dropna(subset=[nom_col_date, nom_col_somme])
         df['Profession'] = df[nom_col_code].apply(assigner_profession)
 
-        # --- BARRE LATÉRALE : FILTRES AVANCÉS ---
-        st.sidebar.header("⚙️ Filtres")
+        # --- BARRE LATÉRALE : FILTRES ---
+        st.sidebar.header("⚙️ Paramètres")
         
-        # 1. Sélection rapide par métier
+        # Option Mois en cours
+        inclure_mois_en_cours = st.sidebar.toggle("Inclure le mois en cours", value=True)
+        maintenant = datetime.now()
+        debut_mois_actuel = maintenant.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        if not inclure_mois_en_cours:
+            df = df[df[nom_col_date] < debut_mois_actuel]
+
+        # Sélection par métier
         st.sidebar.subheader("Sélection par métier")
         professions_dispo = sorted(df['Profession'].unique())
-        
-        # On crée des checkbox pour chaque métier (activés par défaut)
-        metiers_actifs = []
-        for p in professions_dispo:
-            if st.sidebar.checkbox(p, value=True, key=f"check_{p}"):
-                metiers_actifs.append(p)
+        metiers_actifs = [p for p in professions_dispo if st.sidebar.checkbox(p, value=True, key=f"check_{p}")]
 
-        # 2. Sélection fine par Code Tarifaire
+        # Sélection par Code Tarifaire
         st.sidebar.subheader("Codes individuels")
-        # On ne propose que les codes appartenant aux métiers cochés ci-dessus
         codes_possibles = df[df['Profession'].isin(metiers_actifs)]
         liste_codes = sorted(codes_possibles[nom_col_code].unique().astype(str))
-        
-        selection_codes = st.sidebar.multiselect(
-            "Codes à afficher :", 
-            options=liste_codes, 
-            default=liste_codes
-        )
+        selection_codes = st.sidebar.multiselect("Filtrer les codes :", options=liste_codes, default=liste_codes)
 
-        # --- FILTRAGE ET AFFICHAGE ---
+        # --- AFFICHAGE ---
         view_mode = st.radio("Affichage du graphique :", ["Profession", "Code tarifaire"], horizontal=True)
         chart_type = st.radio("Style :", ["Barres", "Courbes"], horizontal=True)
 
@@ -83,7 +81,7 @@ if uploaded_file:
             with st.expander("📄 Détails des données"):
                 st.dataframe(df_plot.sort_values(['Mois', nom_col_somme], ascending=[False, False]))
         else:
-            st.warning("Veuillez sélectionner au moins un métier ou un code.")
+            st.warning("Aucune donnée à afficher.")
             
     except Exception as e:
         st.error(f"Erreur d'analyse : {e}")
